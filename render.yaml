@@ -1,23 +1,33 @@
 services:
   - type: web
-    name: hendy-bot-tele
+    name: hendy-server-bot
     runtime: node
-    plan: free
+    plan: starter
     region: singapore
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
+    buildCommand: npm install --no-audit --no-fund && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 3000
       - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: CLOUDFLARE_DATA_API_URL
+        sync: false
+      - key: CLOUDFLARE_DATA_API_TOKEN
+        sync: false
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: MINI_APP_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
       - key: ENCRYPTION_SECRET
         generateValue: true
-      - key: DATABASE_URL
-        sync: false
-      - key: APP_URL
-        sync: false

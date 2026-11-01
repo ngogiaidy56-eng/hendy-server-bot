@@ -22,18 +22,27 @@ import {
 } from 'lucide-react';
 
 export default function App() {
+  const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+  const apiFetch = (url, options = {}) => {
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const headers = {
+      ...(options.headers || {}),
+      ...(initData ? { Authorization: 'tma ' + initData } : {}),
+    };
+    return fetch(apiBase + url, { ...options, headers });
+  };
   const [activeTab, setActiveTab] = useState('tap');
   const [user, setUser] = useState({
-    id: 777888999,
-    firstName: 'Alex Hendy',
-    username: 'alex_hendy_vip',
-    coins: 5250,
-    level: 3,
-    xp: 250,
-    energy: 980,
-    maxEnergy: 1400,
-    tapPower: 3,
-    streak: 2,
+    id: 0,
+    firstName: 'Telegram User',
+    username: 'telegram_user',
+    coins: 0,
+    level: 1,
+    xp: 0,
+    energy: 1000,
+    maxEnergy: 1000,
+    tapPower: 2,
+    streak: 0,
     lastDailyClaim: null,
   });
 
@@ -81,8 +90,8 @@ export default function App() {
       setIsTelegramClient(true);
       tg.ready();
       tg.expand();
-      if (tg.initDataUnsafe?.user) {
-        const tgUser = tg.initDataUnsafe.user;
+      const tgUser = tg.initDataUnsafe?.user;
+      if (tgUser) {
         setUser((prev) => ({
           ...prev,
           id: tgUser.id,
@@ -91,15 +100,16 @@ export default function App() {
         }));
       }
       setInitDataString(tg.initData);
+      if (tgUser?.id) {
+        fetchUserData(tgUser.id);
+        fetchTasks(tgUser.id);
+      }
+      fetchLeaderboard();
     } else {
-      // Generate default sample initData for testing
-      fetchInitDataSample();
+      setIsTelegramClient(false);
+      setTasks([]);
+      setLeaderboard([]);
     }
-
-    // Fetch initial user and tasks
-    fetchUserData();
-    fetchTasks();
-    fetchLeaderboard();
 
     // Passive energy regeneration ticker
     const timer = setInterval(() => {
@@ -123,29 +133,9 @@ export default function App() {
     setTimeout(() => setFeedbackMsg(null), 3000);
   };
 
-  const fetchInitDataSample = async () => {
+  const fetchUserData = async (userId = user.id) => {
     try {
-      const res = await fetch('/api/auth/generate-mock-init-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user: { id: 777888999, first_name: 'Alex Hendy', username: 'alex_hendy_vip' },
-          token: 'simulated_dev_bot_token',
-        }),
-      });
-      const data = await res.json();
-      if (data.success && data.data?.initData) {
-        setInitDataString(data.data.initData);
-      }
-    } catch {
-      // Fallback
-      setInitDataString('auth_date=1740000000&query_id=AAHdF6IQAAAAAN0XohD72Kj_&user=%7B%22id%22%3A777888999%7D&hash=mock_dev_hash');
-    }
-  };
-
-  const fetchUserData = async () => {
-    try {
-      const res = await fetch(`/api/user/${user.id}`);
+      const res = await apiFetch(`/api/user/${userId}`);
       const data = await res.json();
       if (data.success && data.data) {
         setUser((prev) => ({
@@ -165,9 +155,9 @@ export default function App() {
     }
   };
 
-  const fetchTasks = async () => {
+  const fetchTasks = async (userId = user.id) => {
     try {
-      const res = await fetch(`/api/miniapp/tasks/${user.id}`);
+      const res = await apiFetch(`/api/miniapp/tasks/${userId}`);
       const data = await res.json();
       if (data.success && data.data) {
         setTasks(data.data);
@@ -179,7 +169,7 @@ export default function App() {
 
   const fetchLeaderboard = async () => {
     try {
-      const res = await fetch('/api/miniapp/leaderboard');
+      const res = await apiFetch('/api/miniapp/leaderboard');
       const data = await res.json();
       if (data.success && data.data) {
         setLeaderboard(data.data);
@@ -222,7 +212,7 @@ export default function App() {
     }));
 
     // Trigger API in background
-    fetch(`/api/user/${user.id}/tap`, {
+    apiFetch(`/api/user/${user.id}/tap`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taps: 1 }),
@@ -233,7 +223,7 @@ export default function App() {
   const handleClaimDaily = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/user/${user.id}/daily`, {
+      const res = await apiFetch(`/api/user/${user.id}/daily`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -259,7 +249,7 @@ export default function App() {
   // Complete a task
   const handleCompleteTask = async (taskId, reward) => {
     try {
-      const res = await fetch(`/api/miniapp/tasks/${user.id}/complete`, {
+      const res = await apiFetch(`/api/miniapp/tasks/${user.id}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskId, reward }),
@@ -295,7 +285,7 @@ export default function App() {
     setIsAiTyping(true);
 
     try {
-      const res = await fetch('/api/gemini/chat', {
+      const res = await apiFetch('/api/gemini/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: userText, user }),
@@ -324,7 +314,7 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      const res = await fetch('/api/bot/simulate', {
+      const res = await apiFetch('/api/bot/simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: targetCmd, user }),
@@ -350,7 +340,7 @@ export default function App() {
   // Validate Telegram initData
   const handleValidateInitData = async () => {
     try {
-      const res = await fetch('/api/auth/validate-init-data', {
+      const res = await apiFetch('/api/auth/validate-init-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData: initDataString }),
@@ -370,7 +360,7 @@ export default function App() {
   // Test AES encryption
   const handleEncryptTest = async () => {
     try {
-      const res = await fetch('/api/security/encrypt', {
+      const res = await apiFetch('/api/security/encrypt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: encryptInput }),
@@ -387,7 +377,7 @@ export default function App() {
 
   const handleDecryptTest = async () => {
     try {
-      const res = await fetch('/api/security/decrypt', {
+      const res = await apiFetch('/api/security/decrypt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payload: encryptedOutput }),
@@ -401,6 +391,19 @@ export default function App() {
       showToast('Lỗi giải mã dữ liệu', true);
     }
   };
+
+  if (!isTelegramClient) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+        <section className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center space-y-4">
+          <div className="mx-auto h-14 w-14 rounded-2xl bg-cyan-500/15 text-cyan-300 flex items-center justify-center text-2xl font-black">H</div>
+          <h1 className="text-xl font-bold">Hendy Mini App</h1>
+          <p className="text-sm text-slate-400">Để bảo vệ tài khoản và số dư, hãy mở Mini App từ nút trong cuộc trò chuyện với Hendy Bot trên Telegram.</p>
+          <p className="text-xs text-slate-500">Không đăng nhập hoặc hiển thị tài khoản mẫu trên trình duyệt công khai.</p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <div className="h-full min-h-[640px] bg-slate-950 text-slate-100 flex flex-col justify-between max-w-md mx-auto relative shadow-2xl border-x border-slate-800">
@@ -992,6 +995,7 @@ export default function App() {
             <span className="text-[10px] font-semibold mt-1">Bảng Vàng</span>
           </button>
 
+          {!import.meta.env.PROD && (
           <button
             onClick={() => setActiveTab('console')}
             className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
@@ -1001,6 +1005,7 @@ export default function App() {
             <Terminal className="w-5 h-5" />
             <span className="text-[10px] font-semibold mt-1">Console</span>
           </button>
+          )}
         </div>
       </nav>
     </div>
