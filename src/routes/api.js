@@ -77,9 +77,9 @@ router.post('/bot/simulate', (req, res, next) => {
 });
 
 // Telegram WebApp Authentication & InitData verification
-router.post('/auth/validate-init-data', (req, res, next) => {
+router.post('/auth/validate-init-data', async (req, res, next) => {
   try {
-    const { initData } = req.body;
+    const { initData } = req.body || {};
     if (!initData) {
       throw new AppError('Field "initData" is required', 400, 'PARAM_MISSING');
     }
@@ -87,10 +87,16 @@ router.post('/auth/validate-init-data', (req, res, next) => {
     const validation = validateTelegramInitData(initData);
     let userRecord = null;
     if (validation.isValid && validation.user) {
-      userRecord = userService.getOrCreateUser(validation.user);
+      if (cloudflareDataClient.isConfigured()) {
+        userRecord = await cloudflareDataClient.upsertTelegramUser(validation.user);
+      } else if (process.env.NODE_ENV === 'production') {
+        throw new AppError('Cloudflare Data Worker is not configured.', 503, 'DATA_STORE_UNAVAILABLE');
+      } else {
+        userRecord = userService.getOrCreateUser(validation.user);
+      }
     }
 
-    res.json({
+    return res.json({
       success: validation.isValid,
       data: {
         validation,
@@ -98,7 +104,7 @@ router.post('/auth/validate-init-data', (req, res, next) => {
       },
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 

@@ -33,3 +33,24 @@ test('telegramAuth: rejects missing or empty initData', () => {
   assert.equal(result.isValid, false);
   assert.equal(result.error, 'initData is required');
 });
+
+test('telegramAuth: production rejects mock fallback when bot token is absent', () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+  try {
+    process.env.NODE_ENV = 'production';
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    const signedWithPublicDevKey = generateMockInitData(
+      { id: 456789, first_name: 'Untrusted' },
+      'simulated_dev_bot_token'
+    );
+    const result = validateTelegramInitData(signedWithPublicDevKey);
+    assert.equal(result.isValid, false);
+    assert.match(result.error || '', /Bot Token is not configured/i);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+  }
+});

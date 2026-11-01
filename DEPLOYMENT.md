@@ -68,7 +68,13 @@ In **GitHub → Settings → Secrets and variables → Actions**, add:
 
 The workflow applies D1 migrations, refreshes the Worker secret, deploys the Worker, builds the Mini App against Render's URL and publishes Pages.
 
-Create the Pages project named **`hendy-bot-mini-app`** in Cloudflare Pages once if it does not exist. Use the GitHub Actions workflow as its deployment owner; avoid enabling a second independent build that races with the workflow.
+Create the Pages project once (if it does not already exist):
+
+```bash
+npx wrangler pages project create hendy-bot-mini-app --production-branch main
+```
+
+Use the GitHub Actions workflow as its deployment owner; avoid enabling a second independent build that races with the workflow.
 
 ## 4. Deploy the Render Web Service from GitHub
 

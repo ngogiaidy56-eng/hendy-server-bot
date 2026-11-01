@@ -211,17 +211,19 @@ async function handleInternal(request, env, url) {
   if (request.method === 'PUT' && url.pathname === '/internal/r2/object') {
     const key = request.headers.get('x-object-key') || '';
     const contentType = request.headers.get('content-type') || 'application/octet-stream';
-    const size = Number(request.headers.get('content-length') || 0);
     if (!/^(uploads|packages|proofs)\/[A-Za-z0-9/_\-.]+$/.test(key) || key.includes('..')) {
       return fail('Invalid R2 object key.', 400, 'INVALID_OBJECT_KEY');
     }
-    if (size > 25 * 1024 * 1024) return fail('Maximum object size is 25 MB.', 413, 'OBJECT_TOO_LARGE');
     if (!request.body) return fail('Object body is required.');
-    await env.ASSETS_BUCKET.put(key, request.body, {
+    const objectBody = await request.arrayBuffer();
+    if (objectBody.byteLength > 25 * 1024 * 1024) {
+      return fail('Maximum object size is 25 MB.', 413, 'OBJECT_TOO_LARGE');
+    }
+    await env.ASSETS_BUCKET.put(key, objectBody, {
       httpMetadata: { contentType },
       customMetadata: { uploadedAt: new Date().toISOString() }
     });
-    return ok({ key, sizeBytes: size || null, contentType });
+    return ok({ key, sizeBytes: objectBody.byteLength, contentType });
   }
 
   if (request.method === 'GET' && url.pathname === '/internal/storage/stats') {

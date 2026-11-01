@@ -12,7 +12,7 @@
     "build:miniapp": "vite build --config mini-app/vite.config.mjs",
     "start": "node src/server.js",
     "test": "node --test src/security/cryptoService.test.js src/security/telegramAuth.test.js src/security/webhookSecret.test.js src/services/userService.test.js src/services/appDataService.test.js src/controllers/botController.test.js src/services/storeService.test.js",
-    "lint": "node --check src/server.js && node --check src/controllers/botController.js && node --check src/services/telegramStartup.js && node --check src/services/cloudflareDataClient.js && node --check cloudflare/worker.js",
+    "lint": "node --check src/server.js && node --check src/routes/api.js && node --check src/controllers/botController.js && node --check src/services/telegramStartup.js && node --check src/services/cloudflareDataClient.js && node --check cloudflare/worker.js",
     "preview": "vite preview",
     "clean": "rm -rf dist mini-app/dist"
   },
