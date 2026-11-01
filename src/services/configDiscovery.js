@@ -5,7 +5,7 @@ const RENDER_VARIABLES = [
   { name: "CLOUDFLARE_DATA_API_TOKEN", required: true, purpose: "Bearer token nội bộ giữa Render và Worker." },
   { name: "ADMIN_API_TOKEN", required: true, purpose: "Bảo vệ bảng điều khiển cấu hình." },
   { name: "MINI_APP_URL", required: true, purpose: "Địa chỉ Cloudflare Pages của Telegram Mini App." },
-  { name: "CORS_ALLOWED_ORIGINS", required: false, purpose: "Danh sách origin Pages được phép gọi API." },
+  { name: "CORS_ALLOWED_ORIGINS", required: true, purpose: "Origin Cloudflare Pages được phép gọi API Mini App; phải chứa MINI_APP_URL." },
   { name: "GEMINI_API_KEY", required: false, purpose: "Bật tính năng hỏi đáp Hendy AI." }
 ];
 
