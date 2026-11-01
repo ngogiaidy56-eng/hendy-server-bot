@@ -87,4 +87,24 @@ export const cloudflareDataClient = {
   getStorageStats() {
     return get('/internal/storage/stats');
   },
+  getMenuConfig() {
+    return post('/internal/menu/config/get');
+  },
+  updateMenuConfig(config) {
+    return post('/internal/menu/config/update', { config });
+  },
+  async getHealth() {
+    if (!isCloudflareDataConfigured()) {
+      throw new Error('Cloudflare Data Worker is not configured.');
+    }
+    const response = await fetch(baseUrl() + '/healthz', {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.success === false) {
+      throw new Error(result.error?.message || ('Cloudflare Data Worker returned HTTP ' + response.status));
+    }
+    return result.data;
+  },
 };
