@@ -11,6 +11,10 @@ import apiRouter from './routes/api.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 import { telegramStartup } from './services/telegramStartup.js';
 import { constantTimeEqual } from './security/webhookSecret.js';
+import { attachConfigRealtime } from './services/configRealtime.js';
+import { discoverConfiguration } from './services/configDiscovery.js';
+import { getDefaultMenuConfig } from './services/menuConfigService.js';
+import { cloudflareDataClient } from './services/cloudflareDataClient.js';
 
 dotenv.config();
 
@@ -158,6 +162,19 @@ async function start() {
     }).catch((error) => {
       console.error('[telegram] Startup failed:', error.message);
     });
+  });
+
+  // WebSocket upgrade shares Render's single public PORT.
+  // /ws/menu streams only sanitized UI data; /ws/config requires a one-use admin ticket.
+  attachConfigRealtime(server, {
+    loadMenuConfig: async () => {
+      if (cloudflareDataClient.isConfigured()) return cloudflareDataClient.getMenuConfig();
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('Cloudflare D1 menu storage is not configured.');
+      }
+      return getDefaultMenuConfig();
+    },
+    loadConfigStatus: () => discoverConfiguration(),
   });
 
   let closing = false;

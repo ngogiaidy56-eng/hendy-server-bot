@@ -100,7 +100,30 @@ Set `WEBHOOK_BASE_URL` only if Render's `RENDER_EXTERNAL_URL` is not available. 
 
 Do not set a fixed `PORT`. Render injects the port; the application binds to `0.0.0.0`.
 
-## 5. Local development
+## 5. Live menu, environment discovery and WebSocket
+
+The Telegram Mini App opens on the 14-button menu shown in the reference image. The menu layout, label, enabled state, color variant (`orange`, `cyan`, `green`), row width and destination URL are stored in D1 table `app_settings` under key `menu`.
+
+After the `0002_menu_config.sql` migration has been applied:
+
+- Open the Render service root URL to reach **Hendy Bot Control Center**.
+- Enter `ADMIN_API_TOKEN` in the password field. It is used in memory for admin requests and is not written to local storage.
+- The Config Center checks Render's own runtime variables, probes the Cloudflare Data Worker health endpoint for D1/R2 connectivity and lists the exact GitHub/Cloudflare settings pages for secrets it cannot inspect.
+- Edit button labels, links, colors, layout, visibility or in-app tab targets, then choose **Lưu & đồng bộ menu**.
+- The menu is saved to D1 and broadcast immediately to connected Mini Apps.
+
+WebSocket channels:
+
+| Channel | Access | Events |
+|---|---|---|
+| `/ws/menu` | Public, sanitized menu only | `menu:config` |
+| `/ws/config` | Requires a one-use ticket from `POST /api/config/ws-ticket` | `config:status`, `menu:config` |
+
+The admin WebSocket ticket is short-lived and consumed once. Do not add `ADMIN_API_TOKEN`, BotFather tokens or Worker secrets to the URL or browser bundle. The Mini App menu link accepts only HTTPS or Telegram `tg://` destinations; an unset URL shows a clear “chưa cấu hình” message rather than navigating to a fake page.
+
+The service can verify Render environment variable presence because those values are available to its own process. It deliberately marks GitHub Actions and Cloudflare Worker secret presence as **unverified**: those secret stores do not expose list/read operations to this Render process. Use the links in the Config Center to update those values, then rerun the GitHub deploy workflow or restart Render as appropriate.
+
+## 6. Local development
 
 ```bash
 cp .env.example .env
@@ -113,14 +136,14 @@ The local Express server uses Vite middleware. In development, the simulator can
 
 For a full local Cloudflare integration, set `CLOUDFLARE_DATA_API_URL` and `CLOUDFLARE_DATA_API_TOKEN` to use the deployed Worker. Keep development accounts and balances separate from production.
 
-## 6. Verification and operations
+## 7. Verification and operations
 
 After deployment, verify:
 
 - `GET https://<render-service>/healthz` returns HTTP 200.
 - `GET https://<render-service>/readyz` returns `status: ready` and Telegram status becomes `active`.
 - `GET <worker-url>/healthz` returns HTTP 200 and reports D1 connected.
-- In Telegram, send `/start`, then `/profile` and `/daily`. A second `/daily` claim on the same UTC day must not credit another reward.
+- In Telegram, send `/start` and `/menu` to open the service menu, then test `/profile` and `/daily`. A second `/daily` claim on the same UTC day must not credit another reward.
 - Open the Pages Mini App from Telegram. Requests for user-specific data include Telegram signed `initData`.
 - GitHub Actions shows both CI and the Cloudflare deployment workflow successful.
 
@@ -132,16 +155,21 @@ Useful endpoints:
 | `/readyz` | Configuration and Telegram readiness diagnostics |
 | `/api/health` | Backward-compatible API health |
 | `/api/bot/status` | Bot startup status |
+| `/api/menu/config` | Public sanitized menu configuration |
+| `/api/config/status` | Admin-only environment discovery and Worker health |
+| `/api/config/ws-ticket` | Admin-only one-use WebSocket ticket |
+| `/ws/menu` | Public live menu updates |
+| `/ws/config` | Admin-only configuration updates using one-use ticket |
 | `/api/bot/webhook` | Telegram webhook receiver (secret header required) |
 | `/internal/storage/stats` | Private D1/R2 statistics (Worker Bearer token required) |
 
 Store mutations under `/api/store/*` require `Authorization: Bearer <ADMIN_API_TOKEN>`. Never embed this token in frontend code.
 
-## 7. Deployment notes and known boundaries
+## 8. Deployment notes and known boundaries
 
 - A push to `main` triggers Render auto-deploy through the GitHub connection and the Cloudflare Worker/Pages workflow.
 - Pull requests run CI only; production secrets are not needed by test jobs.
-- D1 migration `0001_bot_runtime.sql` adds runtime tables without deleting the legacy store schema.
+- D1 migrations `0001_bot_runtime.sql` and `0002_menu_config.sql` add Telegram runtime and live menu configuration tables without deleting the legacy store schema.
 - R2 object upload is available through private Worker `PUT /internal/r2/object`, with keys under `uploads/`, `packages/` or `proofs/`, up to 25 MB.
 - The internal Worker token is shared between Render and Cloudflare. Store it only in GitHub Actions, Render and Worker secret stores.
 - The included task reward list is server-side allow-listed and each task may be claimed once per account. Social task completion still needs a provider-specific membership verification policy before real token or cash-equivalent payouts.

@@ -29,3 +29,12 @@ test('botController: /help lists bot commands', async () => {
   assert.match(res.replyText, /\/miniapp/);
   assert.match(res.replyText, /\/ask/);
 });
+
+test('botController: /menu opens the configurable Mini App menu', async () => {
+  const fromUser = { id: 92939495, first_name: 'MenuTester', username: 'menu_tester' };
+  const res = await processMessage('/menu', fromUser, fromUser.id);
+
+  assert.equal(res.type, 'miniapp');
+  assert.match(res.replyText, /Mini App/);
+  assert.ok(res.result?.simulated || res.result?.ok);
+});

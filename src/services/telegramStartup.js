@@ -20,6 +20,7 @@ async function telegramRequest(token, method, payload) {
 
 const COMMANDS = [
   { command: 'start', description: 'Khởi động Hendy Bot' },
+  { command: 'menu', description: 'Mở menu dịch vụ Hendy' },
   { command: 'miniapp', description: 'Mở Hendy Mini App' },
   { command: 'ask', description: 'Hỏi đáp với Hendy AI' },
   { command: 'daily', description: 'Điểm danh nhận thưởng' },

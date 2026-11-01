@@ -133,3 +133,11 @@ CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+
+
+-- 9. Live Telegram Mini App menu and public UI configuration
+CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
