@@ -84,8 +84,15 @@ export function attachConfigRealtime(server, { loadMenuConfig, loadConfigStatus 
       const origin = request.headers.origin;
       const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
         .split(",").map((item) => item.trim()).filter(Boolean);
-      const renderOrigin = process.env.RENDER_EXTERNAL_URL || "";
-      if (origin && process.env.NODE_ENV === "production" && origin !== renderOrigin && !allowedOrigins.includes(origin)) {
+      const renderOrigin = (process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
+      let sameHost = false;
+      try {
+        sameHost = Boolean(origin && new URL(origin).host === (request.headers.host || ""));
+      } catch {
+        sameHost = false;
+      }
+      if (origin && process.env.NODE_ENV === "production" &&
+          !sameHost && origin !== renderOrigin && !allowedOrigins.includes(origin)) {
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         socket.destroy();
         return;
