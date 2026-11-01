@@ -143,7 +143,7 @@ After deployment, verify:
 - `GET https://<render-service>/healthz` returns HTTP 200.
 - `GET https://<render-service>/readyz` returns `status: ready` and Telegram status becomes `active`.
 - `GET <worker-url>/healthz` returns HTTP 200 and reports D1 connected.
-- In Telegram, send `/start`, then `/profile` and `/daily`. A second `/daily` claim on the same UTC day must not credit another reward.
+- In Telegram, send `/start` and `/menu` to open the service menu, then test `/profile` and `/daily`. A second `/daily` claim on the same UTC day must not credit another reward.
 - Open the Pages Mini App from Telegram. Requests for user-specific data include Telegram signed `initData`.
 - GitHub Actions shows both CI and the Cloudflare deployment workflow successful.
 

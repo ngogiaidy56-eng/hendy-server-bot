@@ -146,12 +146,12 @@ export async function processMessage(text, fromUser, chatId = 0) {
     const name = escapeHtml(user.firstName || fromUser.first_name || 'bạn');
     const message = '✨ <b>Chào mừng ' + name + ' đến với Hendy Bot!</b>\n\n' +
       'Mở Mini App để xem tài khoản, nhiệm vụ và bảng xếp hạng.\n\n' +
-      '<b>Lệnh:</b> /miniapp · /ask · /daily · /profile · /help';
+      '<b>Lệnh:</b> /menu · /miniapp · /ask · /daily · /profile · /help';
     const result = await sendTelegramMessage(chatId, message, miniAppKeyboard);
     return { type: 'start', replyText: message, result };
   }
 
-  if (command === '/miniapp') {
+  if (command === '/miniapp' || command === '/menu') {
     const message = '🎨 Hendy Mini App đã sẵn sàng. Nhấn nút bên dưới để mở ứng dụng.';
     const result = await sendTelegramMessage(chatId, message, miniAppKeyboard);
     return { type: 'miniapp', replyText: message, result };
@@ -198,7 +198,7 @@ export async function processMessage(text, fromUser, chatId = 0) {
 
   if (command === '/help') {
     const message = '📖 <b>Hendy Bot — Hướng dẫn</b>\n\n/start — Khởi động bot\n' +
-      '/miniapp — Mở Mini App\n/ask câu hỏi — Hỏi Hendy AI\n/daily — Điểm danh\n' +
+      '/menu — Mở menu dịch vụ\n/miniapp — Mở Mini App\n/ask câu hỏi — Hỏi Hendy AI\n/daily — Điểm danh\n' +
       '/profile — Xem hồ sơ\n/help — Trợ giúp';
     const result = await sendTelegramMessage(chatId, message);
     return { type: 'help', replyText: message, result };
