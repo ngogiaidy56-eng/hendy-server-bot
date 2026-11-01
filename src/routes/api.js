@@ -11,11 +11,80 @@ import { userService } from '../services/userService.js';
 import { appDataService } from '../services/appDataService.js';
 import { validateTelegramInitData, generateMockInitData, telegramAuthMiddleware } from '../security/telegramAuth.js';
 import { cloudflareDataClient } from '../services/cloudflareDataClient.js';
+import { constantTimeEqual } from '../security/webhookSecret.js';
+import { discoverConfiguration } from '../services/configDiscovery.js';
+import { getDefaultMenuConfig, sanitizeMenuConfig } from '../services/menuConfigService.js';
+import { createAdminWsTicket, broadcastMenuConfig, broadcastConfigStatus } from '../services/configRealtime.js';
 import { encrypt, decrypt } from '../security/cryptoService.js';
 import { storeService } from '../services/storeService.js';
 import { AppError } from '../middlewares/errorHandler.js';
 
 const router = Router();
+
+function requireMenuAdmin(req, res, next) {
+  const expected = process.env.ADMIN_API_TOKEN;
+  const supplied = req.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+  if (!expected || !constantTimeEqual(supplied, expected)) {
+    return res.status(expected ? 401 : 503).json({
+      success: false,
+      error: {
+        code: expected ? 'ADMIN_UNAUTHORIZED' : 'ADMIN_AUTH_NOT_CONFIGURED',
+        message: 'Admin API credentials are required.',
+      },
+    });
+  }
+  return next();
+}
+
+// Public menu data is sanitized and contains no secret configuration.
+router.get('/menu/config', async (_req, res, next) => {
+  try {
+    if (cloudflareDataClient.isConfigured()) {
+      const config = await cloudflareDataClient.getMenuConfig();
+      return res.json({ success: true, data: config });
+    }
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'MENU_STORE_UNAVAILABLE', message: 'Cloudflare D1 menu storage is not configured.' },
+      });
+    }
+    return res.json({ success: true, data: getDefaultMenuConfig() });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.put('/menu/config', requireMenuAdmin, async (req, res, next) => {
+  try {
+    if (!cloudflareDataClient.isConfigured()) {
+      throw new AppError('Cloudflare Data Worker is not configured.', 503, 'DATA_STORE_UNAVAILABLE');
+    }
+    const safeConfig = sanitizeMenuConfig(req.body);
+    const saved = await cloudflareDataClient.updateMenuConfig(safeConfig);
+    broadcastMenuConfig(saved);
+    return res.json({ success: true, data: saved });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return next(new AppError(error.message, 400, 'INVALID_MENU_CONFIG'));
+    }
+    return next(error);
+  }
+});
+
+router.get('/config/status', requireMenuAdmin, async (_req, res, next) => {
+  try {
+    const status = await discoverConfiguration();
+    broadcastConfigStatus(status);
+    return res.json({ success: true, data: status });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/config/ws-ticket', requireMenuAdmin, (_req, res) => {
+  return res.json({ success: true, data: createAdminWsTicket() });
+});
 
 const enforceMiniAppIdentity = (req, res, next) => {
   if (process.env.NODE_ENV !== 'production') return next();

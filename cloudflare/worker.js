@@ -39,6 +39,74 @@ const TASKS = [
   { id: 'invite_3_friends', title: 'Invite 3 Friends', description: 'Invite friends to the Hendy community', reward: 5000, category: 'referral', icon: 'user-plus', url: '' }
 ];
 
+const DEFAULT_MENU_CONFIG = {
+  version: 1,
+  theme: { background: "#0b5263", radius: "12px" },
+  buttons: [
+    { id: "minigame", label: "🚀 MINIGAME LIVE", variant: "orange", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "tool_rental", label: "🧰 THUÊ TOOL (NEW)", variant: "cyan", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "gift_packs", label: "🎁 MUA LÌ XÌ · CODE MÀN · CODE TELE", variant: "green", layout: "full", enabled: true, href: "", tab: "" },
+    { id: "topup", label: "💳 NẠP TIỀN", variant: "orange", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "otp_proxy", label: "⚙ OTP & PROXY", variant: "cyan", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "vip_tools", label: "🏆 VIP KHO CÔNG CỤ ĐẶC QUYỀN", variant: "cyan", layout: "full", enabled: true, href: "", tab: "" },
+    { id: "customer_center", label: "💎 TRUNG TÂM KHÁCH HÀNG", variant: "cyan", layout: "full", enabled: true, href: "", tab: "" },
+    { id: "matchmaking", label: "🎉 HỆ THỐNG GHÉP ĐÔI ĐẤU", variant: "orange", layout: "full", enabled: true, href: "", tab: "" },
+    { id: "referral", label: "👥 Giới thiệu REF", variant: "green", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "vip_center", label: "🏅 TRUNG TÂM VIP", variant: "green", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "chat_group", label: "👑 NHÓM CHAT", variant: "green", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "announcements", label: "📢 KÊNH THÔNG BÁO", variant: "green", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "giftcode", label: "🎁 NHẬP GIFTCODE", variant: "green", layout: "half", enabled: true, href: "", tab: "" },
+    { id: "support", label: "🧑🏻 LIÊN HỆ CSKH", variant: "green", layout: "half", enabled: true, href: "", tab: "" }
+  ]
+};
+
+const ALLOWED_MENU_VARIANTS = new Set(["orange", "cyan", "green"]);
+const ALLOWED_MENU_TABS = new Set(["", "menu", "tap", "ai", "tasks", "leaderboard"]);
+
+function sanitizeMenuConfig(input) {
+  if (!input || typeof input !== "object" || !Array.isArray(input.buttons)) {
+    throw new Error("Menu config must contain a buttons array.");
+  }
+  const submitted = new Map(input.buttons.map((item) => [String(item?.id || ""), item]));
+  const buttons = DEFAULT_MENU_CONFIG.buttons.map((base) => {
+    const candidate = submitted.get(base.id) || base;
+    const label = String(candidate.label ?? base.label).trim();
+    const variant = String(candidate.variant ?? base.variant);
+    const layout = String(candidate.layout ?? base.layout);
+    const href = String(candidate.href ?? base.href).trim();
+    const tab = String(candidate.tab ?? base.tab);
+    if (!label || label.length > 64) throw new Error("Menu labels must contain 1–64 characters.");
+    if (!ALLOWED_MENU_VARIANTS.has(variant)) throw new Error("Unsupported menu button color.");
+    if (!["half", "full"].includes(layout)) throw new Error("Unsupported menu button layout.");
+    if (!ALLOWED_MENU_TABS.has(tab)) throw new Error("Unsupported menu tab target.");
+    if (href) {
+      let parsed;
+      try { parsed = new URL(href); } catch { throw new Error("Invalid menu URL."); }
+      if (!["https:", "tg:"].includes(parsed.protocol)) throw new Error("Menu URLs must use HTTPS or tg:.");
+    }
+    return { id: base.id, label, variant, layout, enabled: candidate.enabled !== false, href, tab };
+  });
+  return { version: 1, theme: DEFAULT_MENU_CONFIG.theme, buttons };
+}
+
+async function readMenuConfig(db) {
+  const row = await db.prepare("SELECT config_json FROM app_settings WHERE setting_key = 'menu'")
+    .first();
+  if (!row?.config_json) return DEFAULT_MENU_CONFIG;
+  try { return sanitizeMenuConfig(JSON.parse(row.config_json)); }
+  catch { return DEFAULT_MENU_CONFIG; }
+}
+
+async function writeMenuConfig(db, input) {
+  const config = sanitizeMenuConfig(input);
+  const now = new Date().toISOString();
+  await db.prepare(
+    "INSERT INTO app_settings (setting_key, config_json, updated_at) VALUES ('menu', ?, ?) " +
+    "ON CONFLICT(setting_key) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at"
+  ).bind(JSON.stringify(config), now).run();
+  return { ...config, updatedAt: now };
+}
+
 async function requireInternal(request, env) {
   const expected = env.HENDY_INTERNAL_API_TOKEN;
   const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -206,6 +274,17 @@ async function handleInternal(request, env, url) {
       name: (row.first_name + ' ' + (row.last_name || '')).trim() || row.username,
       username: row.username, coins: row.coins, level: row.level, streak: row.streak
     })));
+  }
+
+  if (request.method === 'POST' && url.pathname === '/internal/menu/config/get') {
+    const config = await readMenuConfig(env.DB);
+    return ok(config);
+  }
+
+  if (request.method === 'POST' && url.pathname === '/internal/menu/config/update') {
+    const body = await request.json().catch(() => ({}));
+    const config = await writeMenuConfig(env.DB, body.config);
+    return ok(config);
   }
 
   if (request.method === 'PUT' && url.pathname === '/internal/r2/object') {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { DEFAULT_MENU_BUTTONS, MENU_VARIANT_CLASSES } from './menuDefaults.js';
 import {
   Sparkles,
   Zap,
@@ -31,7 +32,9 @@ export default function App() {
     };
     return fetch(apiBase + url, { ...options, headers });
   };
-  const [activeTab, setActiveTab] = useState('tap');
+  const [activeTab, setActiveTab] = useState('menu');
+  const [menuConfig, setMenuConfig] = useState({ version: 1, buttons: DEFAULT_MENU_BUTTONS });
+  const [menuSocketStatus, setMenuSocketStatus] = useState('connecting');
   const [user, setUser] = useState({
     id: 0,
     firstName: 'Telegram User',
@@ -123,6 +126,90 @@ export default function App() {
 
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let socket = null;
+    let retryTimer = null;
+
+    const apiOrigin = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+    const wsUrl = () => {
+      const target = new URL(apiOrigin || window.location.origin);
+      target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+      target.pathname = '/ws/menu';
+      target.search = '';
+      target.hash = '';
+      return target.toString();
+    };
+
+    const loadMenu = async () => {
+      try {
+        const response = await fetch(apiOrigin + '/api/menu/config', { cache: 'no-store' });
+        const result = await response.json();
+        if (!disposed && response.ok && result.success && Array.isArray(result.data?.buttons)) {
+          setMenuConfig(result.data);
+        }
+      } catch {
+        if (!disposed) setMenuSocketStatus('offline');
+      }
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      try {
+        socket = new WebSocket(wsUrl());
+        socket.onopen = () => !disposed && setMenuSocketStatus('live');
+        socket.onmessage = (message) => {
+          try {
+            const event = JSON.parse(message.data);
+            if (!disposed && event.type === 'menu:config' && Array.isArray(event.payload?.buttons)) {
+              setMenuConfig(event.payload);
+            }
+          } catch {
+            // Ignore malformed public menu events.
+          }
+        };
+        socket.onerror = () => !disposed && setMenuSocketStatus('reconnecting');
+        socket.onclose = () => {
+          if (!disposed) {
+            setMenuSocketStatus('reconnecting');
+            retryTimer = window.setTimeout(connect, 5000);
+          }
+        };
+      } catch {
+        if (!disposed) {
+          setMenuSocketStatus('reconnecting');
+          retryTimer = window.setTimeout(connect, 5000);
+        }
+      }
+    };
+
+    void loadMenu();
+    connect();
+    return () => {
+      disposed = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, []);
+
+  const handleMenuButton = (button) => {
+    if (button.href) {
+      if (button.href.startsWith('tg://')) {
+        window.location.href = button.href;
+      } else if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(button.href);
+      } else {
+        window.open(button.href, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+    if (button.tab && ['menu', 'tap', 'ai', 'tasks', 'leaderboard'].includes(button.tab)) {
+      setActiveTab(button.tab);
+      return;
+    }
+    showToast('Mục này chưa có liên kết. Quản trị viên cần cấu hình URL trong Hendy Control Center.', true);
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -457,6 +544,48 @@ export default function App() {
 
       {/* Main Content Scroll Area */}
       <main className="flex-1 overflow-y-auto pb-24 p-4">
+        {/* MENU: configurable Telegram service menu */}
+        {activeTab === 'menu' && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-[#104d5d] via-[#0c394b] to-slate-950 p-4 shadow-xl">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-200">Hendy Telegram Services</p>
+                  <h2 className="mt-1 text-lg font-black text-white">Xin chào, {user.firstName}</h2>
+                  <p className="mt-1 text-[11px] text-cyan-100/70">Chọn dịch vụ bạn muốn sử dụng</p>
+                </div>
+                <div className="rounded-xl border border-white/15 bg-slate-950/30 px-3 py-2 text-right">
+                  <span className="block text-[10px] text-cyan-100/70">$HNDY</span>
+                  <span className="text-sm font-black text-white">{user.coins.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-cyan-200/10 bg-[#0b5263] p-2 shadow-2xl">
+              {menuConfig.buttons.filter((button) => button.enabled).map((button) => (
+                <button
+                  key={button.id}
+                  type="button"
+                  onClick={() => handleMenuButton(button)}
+                  className={`min-h-10 rounded-lg border px-2.5 py-2.5 text-center text-[10px] font-extrabold uppercase tracking-wide text-white shadow-sm transition-all active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-white/70 ${button.layout === 'full' ? 'col-span-2' : ''} ${MENU_VARIANT_CLASSES[button.variant] || MENU_VARIANT_CLASSES.green}`}
+                >
+                  {button.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+              <div>
+                <span className="block text-[10px] font-semibold text-slate-300">Đồng bộ menu trực tiếp</span>
+                <span className="text-[10px] text-slate-500">Màu sắc và nút được quản lý từ D1</span>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${menuSocketStatus === 'live' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-200'}`}>
+                {menuSocketStatus === 'live' ? 'LIVE' : menuSocketStatus === 'offline' ? 'OFFLINE' : 'CONNECTING'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* TAB 1: TAP & MINE */}
         {activeTab === 'tap' && (
           <div className="flex flex-col items-center justify-center py-4 space-y-6">
@@ -954,7 +1083,14 @@ export default function App() {
 
       {/* Bottom Telegram Mini App Tab Navigation */}
       <nav className="sticky bottom-0 left-0 right-0 w-full bg-slate-900/95 backdrop-blur-xl border-t border-slate-800 z-40 px-2 py-2">
-        <div className="grid grid-cols-5 gap-1">
+        <div className="grid grid-cols-6 gap-1">
+          <button
+            onClick={() => setActiveTab('menu')}
+            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${activeTab === 'menu' ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <Bot className="w-5 h-5" />
+            <span className="text-[10px] font-semibold mt-1">Menu</span>
+          </button>
           <button
             onClick={() => setActiveTab('tap')}
             className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
