@@ -36,20 +36,70 @@ export async function discoverConfiguration({
     status: isSet(env, item.name) ? "configured" : item.required ? "missing" : "optional",
   }));
 
-  let dataWorker = { status: "not_configured", message: "Set CLOUDFLARE_DATA_API_URL and CLOUDFLARE_DATA_API_TOKEN on Render." };
+  let dataWorker = {
+    status: "not_configured",
+    message: "Set CLOUDFLARE_DATA_API_URL and CLOUDFLARE_DATA_API_TOKEN on Render.",
+    secretStatus: "missing",
+    d1Status: "missing",
+    r2Status: "missing"
+  };
   if (isSet(env, "CLOUDFLARE_DATA_API_URL") && isSet(env, "CLOUDFLARE_DATA_API_TOKEN")) {
+    const base = env.CLOUDFLARE_DATA_API_URL.replace(/\/+$/, "");
     try {
-      const base = env.CLOUDFLARE_DATA_API_URL.replace(/\/+$/, "");
-      const response = await fetchImpl(base + "/healthz", {
+      const healthResponse = await fetchImpl(base + "/healthz", {
         method: "GET",
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(5000)
       });
-      const result = await response.json().catch(() => ({}));
-      dataWorker = response.ok && result.success && result.data?.database === "connected" && result.data?.r2
-        ? { status: "connected", message: "Worker, D1 và R2 đang phản hồi." }
-        : { status: "error", message: "Worker health check không xác nhận đủ D1/R2.", httpStatus: response.status };
+      const health = await healthResponse.json().catch(() => ({}));
+      const storageReady = healthResponse.ok && health.success &&
+        health.data?.database === "connected" && health.data?.r2 === true;
+      if (!storageReady) {
+        dataWorker = {
+          status: "error",
+          message: "Worker health check did not confirm both D1 and R2 bindings.",
+          secretStatus: "unverified",
+          d1Status: health.data?.database === "connected" ? "configured" : "missing",
+          r2Status: health.data?.r2 === true ? "configured" : "missing"
+        };
+      } else {
+        const privateResponse = await fetchImpl(base + "/internal/menu/config/get", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + env.CLOUDFLARE_DATA_API_TOKEN,
+            "content-type": "application/json"
+          },
+          body: "{}",
+          signal: AbortSignal.timeout(5000)
+        });
+        const privateResult = await privateResponse.json().catch(() => ({}));
+        const privateReady = privateResponse.ok && privateResult.success === true &&
+          Array.isArray(privateResult.data?.buttons);
+        dataWorker = privateReady
+          ? {
+              status: "connected",
+              message: "Worker secret, D1, R2 và bảng cấu hình menu đã được xác minh.",
+              secretStatus: "configured",
+              d1Status: "configured",
+              r2Status: "configured"
+            }
+          : {
+              status: "error",
+              message: privateResponse.status === 401
+                ? "Worker từ chối Bearer token. Hãy đồng bộ HENDY_INTERNAL_API_TOKEN và CLOUDFLARE_DATA_API_TOKEN."
+                : "Worker đã phản hồi nhưng endpoint menu/D1 chưa sẵn sàng. Kiểm tra migration 0002_menu_config.sql.",
+              secretStatus: privateResponse.status === 401 ? "missing" : "unverified",
+              d1Status: "configured",
+              r2Status: "configured"
+            };
+      }
     } catch (error) {
-      dataWorker = { status: "error", message: "Không kết nối được Data Worker: " + error.message };
+      dataWorker = {
+        status: "error",
+        message: "Không kết nối được Data Worker: " + error.message,
+        secretStatus: "unverified",
+        d1Status: "unverified",
+        r2Status: "unverified"
+      };
     }
   }
 
@@ -85,9 +135,15 @@ export async function discoverConfiguration({
         title: "Cloudflare Worker / D1 / R2",
         destination: "Cloudflare Dashboard → Workers & Pages → hendy-bot-data → Settings → Variables and Secrets",
         url: LOCATION_LINKS.cloudflare,
-        description: "Worker health probe kiểm tra D1 và R2 thực tế; secret nội bộ không bao giờ được đọc hoặc trả về trình duyệt.",
+        description: "Kiểm tra thực tế Worker Bearer token, D1, R2 và bảng app_settings; không trả giá trị secret về trình duyệt.",
         status: dataWorker.status,
         message: dataWorker.message,
+        variables: [
+          { name: "HENDY_INTERNAL_API_TOKEN", required: true, purpose: "Worker secret; phải trùng CLOUDFLARE_DATA_API_TOKEN trên Render.", status: dataWorker.secretStatus },
+          { name: "DB (D1 binding)", required: true, purpose: "Binding D1 được kiểm tra qua /healthz và API menu.", status: dataWorker.d1Status },
+          { name: "ASSETS_BUCKET (R2 binding)", required: true, purpose: "Binding R2 được kiểm tra qua Worker health check.", status: dataWorker.r2Status },
+          { name: "app_settings / menu", required: true, purpose: "D1 migration 0002_menu_config.sql phải được áp dụng.", status: dataWorker.status === "connected" ? "configured" : "missing" }
+        ],
       },
       {
         id: "pages",

@@ -26,14 +26,25 @@ test("configuration discovery verifies the Worker D1 and R2 health response", as
       ADMIN_API_TOKEN: "admin",
       MINI_APP_URL: "https://hendy-bot-mini-app.pages.dev",
     },
-    fetchImpl: async (url) => {
-      assert.equal(url, "https://hendy-bot-data.example.workers.dev/healthz");
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/healthz")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true, data: { database: "connected", r2: true } }),
+        };
+      }
+      assert.equal(url, "https://hendy-bot-data.example.workers.dev/internal/menu/config/get");
+      assert.equal(options.headers.authorization, "Bearer private");
       return {
         ok: true,
         status: 200,
-        json: async () => ({ success: true, data: { database: "connected", r2: true } }),
+        json: async () => ({ success: true, data: { buttons: [{ id: "menu" }] } }),
       };
     },
   });
   assert.equal(result.providers.find((provider) => provider.id === "cloudflare").status, "connected");
+  const cloudflare = result.providers.find((provider) => provider.id === "cloudflare");
+  assert.equal(cloudflare.variables.find((item) => item.name === "HENDY_INTERNAL_API_TOKEN").status, "configured");
+  assert.equal(cloudflare.variables.find((item) => item.name === "DB (D1 binding)").status, "configured");
 });
