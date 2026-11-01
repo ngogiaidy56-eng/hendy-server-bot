@@ -238,7 +238,10 @@ router.post('/miniapp/tasks/:id/complete', (req, res, next) => {
 });
 
 // Mini App Leaderboard
-router.get('/miniapp/leaderboard', useCloudflareData, async (req, res, next) => {
+router.get('/miniapp/leaderboard', (req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') return next();
+  return telegramAuthMiddleware(req, res, next);
+}, useCloudflareData, async (req, res, next) => {
   if (!cloudflareDataClient.isConfigured()) return next('route');
   try {
     const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
