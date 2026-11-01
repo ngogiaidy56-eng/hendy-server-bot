@@ -127,10 +127,18 @@ export function attachConfigRealtime(server, { loadMenuConfig, loadConfigStatus 
 
     await sendSnapshot();
 
+    let isAlive = true;
+    socket.on("pong", () => {
+      isAlive = true;
+    });
     const heartbeat = setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.ping();
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (!isAlive) {
+        socket.terminate();
+        return;
       }
+      isAlive = false;
+      socket.ping();
     }, 25_000);
 
     let refresh = null;
