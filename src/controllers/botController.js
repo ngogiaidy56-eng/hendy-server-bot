@@ -1,234 +1,233 @@
 /**
- * Bot Controller
- * Receives incoming Telegram updates, dispatches commands (/start, /ask, /daily, /profile, /miniapp),
- * orchestrates Gemini AI integration, and returns response payloads.
+ * Production Telegram webhook dispatcher.
  */
-
 import { userService } from '../services/userService.js';
 import { appDataService } from '../services/appDataService.js';
-import { telegramStartup } from '../services/telegramStartup.js';
+import { cloudflareDataClient } from '../services/cloudflareDataClient.js';
+import { constantTimeEqual } from '../security/webhookSecret.js';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
-/**
- * Sends a message back to Telegram chat
- * @param {string|number} chatId
- * @param {string} text
- * @param {object} [replyMarkup]
- */
-export async function sendTelegramMessage(chatId, text, replyMarkup = null) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+}
 
-  // In simulated dev mode or if token is not set, log and return simulated payload
-  if (!token || token.trim() === '' || token === 'your_telegram_bot_token_here') {
+async function telegramApi(method, payload) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not configured.');
+  const response = await fetch(TELEGRAM_API_BASE + '/bot' + token + '/' + method, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) {
+    throw new Error(result.description || ('Telegram API ' + method + ' returned HTTP ' + response.status));
+  }
+  return result;
+}
+
+export async function sendTelegramMessage(chatId, text, replyMarkup = null) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    if (process.env.NODE_ENV === 'production') throw new Error('Telegram bot token is missing.');
     return {
       ok: true,
-      result: {
-        message_id: Math.floor(Math.random() * 100000),
-        chat: { id: chatId },
-        text,
-        reply_markup: replyMarkup,
-        date: Math.floor(Date.now() / 1000),
-      },
       simulated: true,
+      result: { message_id: 1, chat: { id: chatId }, text, reply_markup: replyMarkup },
     };
   }
+  const payload = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  return telegramApi('sendMessage', payload);
+}
 
+function requireWebhookSecret(req, res) {
+  const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!expected) {
+    if (process.env.NODE_ENV !== 'production') return true;
+    res.status(503).json({ ok: false, error: 'Webhook secret is not configured.' });
+    return false;
+  }
+  const supplied = req.get('x-telegram-bot-api-secret-token') || '';
+  if (!constantTimeEqual(supplied, expected)) {
+    res.status(401).json({ ok: false, error: 'Invalid Telegram webhook secret.' });
+    return false;
+  }
+  return true;
+}
+
+async function getRuntimeUser(telegramUser) {
+  if (cloudflareDataClient.isConfigured()) return cloudflareDataClient.upsertTelegramUser(telegramUser);
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Cloudflare Data Worker is required in production.');
+  }
+  return userService.getOrCreateUser(telegramUser);
+}
+
+async function claimDaily(userId) {
+  if (cloudflareDataClient.isConfigured()) return cloudflareDataClient.claimDailyReward(userId);
+  if (process.env.NODE_ENV === 'production') throw new Error('Cloudflare Data Worker is required in production.');
+  const result = userService.claimDailyReward(userId);
+  return { claimed: true, ...result };
+}
+
+export async function handleWebhook(req, res) {
+  if (!requireWebhookSecret(req, res)) return;
+  const update = req.body;
+  if (!update || typeof update !== 'object') {
+    return res.status(400).json({ ok: false, error: 'Invalid update body.' });
+  }
+
+  const updateId = update.update_id;
+  let claimedUpdate = false;
   try {
-    const payload = {
-      chat_id: chatId,
-      text,
-      parse_mode: 'HTML',
-    };
-    if (replyMarkup) {
-      payload.reply_markup = replyMarkup;
+    if (Number.isInteger(updateId) && cloudflareDataClient.isConfigured()) {
+      const claim = await cloudflareDataClient.claimTelegramUpdate(updateId);
+      if (claim.duplicate) return res.status(200).json({ ok: true, duplicate: true });
+      if (claim.inProgress) return res.status(503).json({ ok: false, retry: true, error: 'Update is still being processed.' });
+      claimedUpdate = true;
+    } else if (process.env.NODE_ENV === 'production') {
+      return res.status(503).json({ ok: false, error: 'Cloudflare update storage is not configured.' });
     }
 
-    const res = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    let message = update.message || update.edited_message;
+    let commandText = message?.text || message?.caption || '';
+    let fromUser = message?.from;
+    let chatId = message?.chat?.id;
 
-    return await res.json();
-  } catch (err) {
-    console.error('[sendTelegramMessage Error]', err);
-    return { ok: false, error: err.message };
+    if (update.callback_query) {
+      const callback = update.callback_query;
+      await telegramApi('answerCallbackQuery', { callback_query_id: callback.id });
+      message = callback.message;
+      fromUser = callback.from;
+      chatId = message?.chat?.id;
+      commandText = callback.data === 'cmd_daily' ? '/daily'
+        : callback.data === 'cmd_profile' ? '/profile' : '/help';
+    }
+
+    if (!fromUser?.id || !chatId) {
+      if (claimedUpdate) await cloudflareDataClient.completeTelegramUpdate(updateId);
+      return res.status(200).json({ ok: true, ignored: true });
+    }
+
+    const result = await processMessage(commandText, fromUser, chatId);
+    if (claimedUpdate) await cloudflareDataClient.completeTelegramUpdate(updateId);
+    return res.status(200).json({ ok: true, type: result.type });
+  } catch (error) {
+    if (claimedUpdate) await cloudflareDataClient.failTelegramUpdate(updateId).catch(() => {});
+    console.error('[telegram webhook] Update processing failed:', error.message);
+    return res.status(500).json({ ok: false, error: 'Update processing failed. Telegram may retry.' });
   }
 }
 
-/**
- * Main Controller Handler for Telegram Webhook
- */
-export async function handleWebhook(req, res, next) {
-  try {
-    const update = req.body;
-    if (!update) {
-      return res.status(200).json({ ok: true, message: 'Empty update ignored' });
-    }
-
-    const message = update.message;
-    if (!message) {
-      return res.status(200).json({ ok: true, message: 'No message in update' });
-    }
-
-    const chatId = message.chat.id;
-    const fromUser = message.from;
-    const text = message.text || '';
-
-    const response = await processMessage(text, fromUser, chatId);
-    return res.status(200).json({ ok: true, response });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
- * Core command processing logic
- * @param {string} text
- * @param {object} fromUser
- * @param {string|number} chatId
- */
+/** Supported commands: /start, /miniapp, /ask, /daily, /profile, /balance and /help. */
 export async function processMessage(text, fromUser, chatId = 0) {
-  const cleanText = (text || '').trim();
-  const [command, ...args] = cleanText.split(' ');
-  const user = userService.getOrCreateUser(fromUser);
-  const appUrl = process.env.APP_URL || 'https://hendy-tele-app.onrender.com';
-
-  // Inline keyboard for Telegram Mini App
+  const cleanText = String(text || '').trim();
+  const parts = cleanText.split(/\s+/);
+  const rawCommand = parts.shift() || '';
+  const command = rawCommand.split('@')[0].toLowerCase();
+  const args = parts;
+  const user = await getRuntimeUser(fromUser);
+  const appUrl = process.env.MINI_APP_URL || process.env.APP_URL || 'https://example.invalid';
   const miniAppKeyboard = {
     inline_keyboard: [
+      [{ text: '🚀 Mở Hendy Mini App', web_app: { url: appUrl } }],
       [
-        {
-          text: '🚀 Mở Hendy Mini App',
-          web_app: { url: appUrl },
-        },
-      ],
-      [
-        { text: '🎁 Điểm danh (/daily)', callback_data: 'cmd_daily' },
-        { text: '👤 Hồ sơ (/profile)', callback_data: 'cmd_profile' },
+        { text: '🎁 Điểm danh', callback_data: 'cmd_daily' },
+        { text: '👤 Hồ sơ', callback_data: 'cmd_profile' },
       ],
     ],
   };
 
-  if (command === '/start') {
-    const welcomeMsg = `✨ <b>Chào mừng ${user.firstName} đến với Hendy Bot!</b> ✨
-
-Tôi là <b>Hendy</b> — Trợ lý Telegram AI thông minh tích hợp <b>Telegram Mini App (TMA)</b> và trí tuệ nhân tạo <b>Gemini 3.8 Flash</b>.
-
-💰 <b>Số dư khởi tạo:</b> ${user.coins.toLocaleString()} $HNDY
-⚡ <b>Cấp độ:</b> Level ${user.level} (Năng lượng: ${user.energy}/${user.maxEnergy})
-
-📌 <b>Các lệnh nhanh:</b>
-• <code>/miniapp</code> : Khởi chạy Mini App trên Telegram
-• <code>/ask [câu hỏi]</code> : Hỏi đáp với AI Gemini
-• <code>/daily</code> : Điểm danh nhận thưởng hàng ngày
-• <code>/profile</code> : Xem chi tiết tài khoản & mã mời
-• <code>/help</code> : Xem hướng dẫn chi tiết
-
-👇 <i>Nhấn nút bên dưới để mở Mini App ngay:</i>`;
-
-    const result = await sendTelegramMessage(chatId, welcomeMsg, miniAppKeyboard);
-    return { type: 'start', replyText: welcomeMsg, result };
+  if (command === '/start' || command === '') {
+    const name = escapeHtml(user.firstName || fromUser.first_name || 'bạn');
+    const message = '✨ <b>Chào mừng ' + name + ' đến với Hendy Bot!</b>\n\n' +
+      'Mở Mini App để xem tài khoản, nhiệm vụ và bảng xếp hạng.\n\n' +
+      '<b>Lệnh:</b> /miniapp · /ask · /daily · /profile · /help';
+    const result = await sendTelegramMessage(chatId, message, miniAppKeyboard);
+    return { type: 'start', replyText: message, result };
   }
 
   if (command === '/miniapp') {
-    const msg = `🎨 <b>Hendy Telegram Mini App</b> đã sẵn sàng!\nNhấn nút bên dưới để trải nghiệm giao diện WebApp trực tiếp:`;
-    const result = await sendTelegramMessage(chatId, msg, miniAppKeyboard);
-    return { type: 'miniapp', replyText: msg, result };
+    const message = '🎨 Hendy Mini App đã sẵn sàng. Nhấn nút bên dưới để mở ứng dụng.';
+    const result = await sendTelegramMessage(chatId, message, miniAppKeyboard);
+    return { type: 'miniapp', replyText: message, result };
   }
 
   if (command === '/daily') {
-    try {
-      const claimResult = userService.claimDailyReward(user.id);
-      const msg = `🎉 <b>Điểm danh thành công!</b>
-🎁 Nhận được: +<b>${claimResult.reward.toLocaleString()}</b> $HNDY
-🔥 Chuỗi điểm danh: <b>${claimResult.streak} ngày liên tiếp</b>
-💰 Tổng số dư hiện tại: <b>${claimResult.coins.toLocaleString()}</b> $HNDY`;
-
-      const result = await sendTelegramMessage(chatId, msg);
-      return { type: 'daily', replyText: msg, result };
-    } catch (e) {
-      const msg = `⏳ <b>Thông báo:</b> ${e.message}`;
-      const result = await sendTelegramMessage(chatId, msg);
-      return { type: 'daily_error', replyText: msg, result };
+    const claim = await claimDaily(user.id);
+    if (!claim.claimed) {
+      const message = '⏳ Bạn đã nhận thưởng hôm nay. Hãy quay lại vào ngày mai nhé!';
+      const result = await sendTelegramMessage(chatId, message);
+      return { type: 'daily_already_claimed', replyText: message, result };
     }
+    const message = '🎉 <b>Điểm danh thành công!</b>\n🎁 Nhận: +<b>' +
+      Number(claim.reward).toLocaleString() + '</b> $HNDY\n🔥 Chuỗi: <b>' +
+      claim.streak + ' ngày</b>\n💰 Số dư: <b>' +
+      Number(claim.coins).toLocaleString() + '</b> $HNDY';
+    const result = await sendTelegramMessage(chatId, message);
+    return { type: 'daily', replyText: message, result };
   }
 
   if (command === '/profile' || command === '/balance') {
-    const msg = `👤 <b>Hồ sơ Hendy của bạn:</b>
-
-🆔 ID: <code>${user.id}</code>
-👤 Tên: <b>${user.firstName}</b> (@${user.username})
-💰 Số dư: <b>${user.coins.toLocaleString()} $HNDY</b>
-⭐ Level: <b>${user.level}</b> (XP: ${user.xp})
-⚡ Năng lượng: <b>${user.energy}/${user.maxEnergy}</b>
-🔥 Chuỗi Streak: <b>${user.streak} ngày</b>
-👥 Bạn bè đã mời: <b>${user.referralsCount} người</b>
-🔗 Link giới thiệu: <code>https://t.me/HendyBot?start=ref_${user.id}</code>`;
-
-    const result = await sendTelegramMessage(chatId, msg, miniAppKeyboard);
-    return { type: 'profile', replyText: msg, result };
+    const message = '👤 <b>Hồ sơ Hendy</b>\n\n🆔 ID: <code>' + escapeHtml(user.id) +
+      '</code>\n👤 Tên: <b>' + escapeHtml(user.firstName) +
+      '</b>\n💰 Số dư: <b>' + Number(user.coins || 0).toLocaleString() +
+      ' $HNDY</b>\n⭐ Level: <b>' + (user.level || 1) +
+      '</b> · XP: ' + (user.xp || 0) + '\n🔥 Chuỗi: <b>' +
+      (user.streak || 0) + ' ngày</b>\n\nMở Mini App để xem thêm chi tiết.';
+    const result = await sendTelegramMessage(chatId, message, miniAppKeyboard);
+    return { type: 'profile', replyText: message, result };
   }
 
   if (command === '/ask') {
-    const query = args.join(' ').trim();
-    if (!query) {
-      const msg = `❓ Vui lòng nhập câu hỏi sau lệnh <code>/ask</code>.\n<i>Ví dụ:</i> <code>/ask Telegram Mini App hoạt động như thế nào?</code>`;
-      const result = await sendTelegramMessage(chatId, msg);
-      return { type: 'ask_empty', replyText: msg, result };
+    const prompt = args.join(' ').trim();
+    if (!prompt) {
+      const message = 'Vui lòng nhập câu hỏi sau lệnh /ask. Ví dụ: /ask Telegram Mini App hoạt động thế nào?';
+      const result = await sendTelegramMessage(chatId, message);
+      return { type: 'ask_empty', replyText: message, result };
     }
-
-    const aiReply = await appDataService.generateHendyAiResponse(query, user);
-    const msg = `🧠 <b>Hendy AI (Gemini 3.8 Flash):</b>\n\n${aiReply}`;
-    const result = await sendTelegramMessage(chatId, msg);
-    return { type: 'ask', replyText: msg, result };
+    const reply = await appDataService.generateHendyAiResponse(prompt, user);
+    const message = '🧠 <b>Hendy AI</b>\n\n' + escapeHtml(reply).slice(0, 3800);
+    const result = await sendTelegramMessage(chatId, message);
+    return { type: 'ask', replyText: message, result };
   }
 
   if (command === '/help') {
-    const msg = `📖 <b>Danh sách lệnh & hướng dẫn Hendy Bot:</b>
-
-/start - Khởi động lại Bot và nhận link Mini App
-/miniapp - Mở giao diện Telegram Mini App (TMA)
-/ask &lt;câu hỏi&gt; - Trò chuyện với trợ lý Gemini AI
-/daily - Điểm danh nhận thưởng chuỗi mỗi 24 giờ
-/profile - Xem thông tin người dùng, số dư và link ref
-/help - Xem bảng hướng dẫn này
-
-Hệ thống được thiết kế với kiến trúc chuẩn Node.js Express Backend và React Vite Mini App.`;
-
-    const result = await sendTelegramMessage(chatId, msg);
-    return { type: 'help', replyText: msg, result };
+    const message = '📖 <b>Hendy Bot — Hướng dẫn</b>\n\n/start — Khởi động bot\n' +
+      '/miniapp — Mở Mini App\n/ask câu hỏi — Hỏi Hendy AI\n/daily — Điểm danh\n' +
+      '/profile — Xem hồ sơ\n/help — Trợ giúp';
+    const result = await sendTelegramMessage(chatId, message);
+    return { type: 'help', replyText: message, result };
   }
 
-  // If user sends normal text without slash command, treat as Gemini AI query
-  if (cleanText.length > 0 && !cleanText.startsWith('/')) {
-    const aiReply = await appDataService.generateHendyAiResponse(cleanText, user);
-    const msg = `🧠 <b>Hendy AI:</b>\n\n${aiReply}`;
-    const result = await sendTelegramMessage(chatId, msg);
-    return { type: 'general_chat', replyText: msg, result };
+  if (cleanText && !command.startsWith('/')) {
+    const reply = await appDataService.generateHendyAiResponse(cleanText, user);
+    const message = '🧠 <b>Hendy AI</b>\n\n' + escapeHtml(reply).slice(0, 3800);
+    const result = await sendTelegramMessage(chatId, message);
+    return { type: 'general_chat', replyText: message, result };
   }
 
-  const defaultMsg = `❓ Lệnh không nhận diện. Gõ <code>/help</code> để xem hướng dẫn sử dụng bot.`;
-  const result = await sendTelegramMessage(chatId, defaultMsg);
-  return { type: 'unknown', replyText: defaultMsg, result };
+  const message = '❓ Lệnh chưa được hỗ trợ. Gõ /help để xem danh sách lệnh.';
+  const result = await sendTelegramMessage(chatId, message);
+  return { type: 'unknown', replyText: message, result };
 }
 
-/**
- * Controller endpoint to test/simulate commands directly from Web UI
- */
 export async function simulateBotCommand(req, res, next) {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Not found.' } });
+  }
   try {
-    const { message, user } = req.body;
-    const testUser = user || {
-      id: 99887766,
-      first_name: 'Tester',
-      username: 'tester_tma',
-    };
-
-    const result = await processMessage(message, testUser, 99887766);
-    return res.status(200).json({ success: true, result });
-  } catch (err) {
-    next(err);
+    const body = req.body || {};
+    const message = body.message;
+    if (!message) return res.status(400).json({ success: false, error: { code: 'PARAM_MISSING', message: 'message is required' } });
+    const simulatedUser = body.user || { id: 777888999, first_name: 'Hendy Explorer', username: 'hendy_user' };
+    const result = await processMessage(message, simulatedUser, simulatedUser.id);
+    return res.json({ success: true, result });
+  } catch (error) {
+    return next(error);
   }
 }

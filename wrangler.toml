@@ -1,26 +1,20 @@
-# Cloudflare Pages / Workers Configuration for Hendy App Store & Admin Ecosystem
-name = "hendy-bot-tele-store"
-compatibility_date = "2026-02-01"
-pages_build_output_dir = "dist"
+name = "hendy-bot-data"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
 
-# Cloudflare D1 Database Binding
 [[d1_databases]]
 binding = "DB"
-database_name = "hendy_production_db"
-database_id = "d1-hendy-prod-uuid-2026"
+database_name = "hendy-bot-data"
+database_id = "REPLACE_WITH_CLOUDFLARE_D1_DATABASE_ID"
 migrations_dir = "d1/migrations"
 
-# Cloudflare R2 Object Storage Bucket Binding (Product Assets, App Packages & Screenshots)
 [[r2_buckets]]
 binding = "ASSETS_BUCKET"
-bucket_name = "hendy-store-assets"
-preview_bucket_name = "hendy-store-assets-preview"
+bucket_name = "hendy-bot-assets"
 
-# Environment Variables for Cloudflare Deployment
 [vars]
-ENVIRONMENT = "production"
-APP_NAME = "Hendy App Store & Bot"
-DEFAULT_CURRENCY = "HNDY"
-AI_MODEL = "gemini-3.8-flash"
-STORAGE_PROVIDER = "cloudflare-r2"
-DATABASE_PROVIDER = "cloudflare-d1"
+APP_ENV = "production"
+
+[triggers]
+crons = ["0 3 * * *"]

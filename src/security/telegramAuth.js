@@ -41,8 +41,11 @@ export function validateTelegramInitData(initData, botToken = process.env.TELEGR
     dataCheckArr.sort();
     const dataCheckString = dataCheckArr.join('\n');
 
-    // If bot token is not configured or in simulated dev mode
-    const token = botToken || 'simulated_dev_bot_token';
+    // A public development fallback is never permitted in production.
+    const token = botToken || (process.env.NODE_ENV === 'production' ? '' : 'simulated_dev_bot_token');
+    if (!token) {
+      return { isValid: false, user: null, authDate: 0, params, error: 'Telegram Bot Token is not configured' };
+    }
 
     // Step 1: secret_key = HMAC_SHA256("WebAppData", bot_token)
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
@@ -74,8 +77,15 @@ export function validateTelegramInitData(initData, botToken = process.env.TELEGR
     const authDate = parseInt(params.auth_date, 10) || 0;
     const nowInSeconds = Math.floor(Date.now() / 1000);
 
-    // If expired
-    if (maxAgeSeconds > 0 && authDate > 0 && (nowInSeconds - authDate > maxAgeSeconds)) {
+    if (authDate <= 0) {
+      return { isValid: false, user, authDate, params, error: 'Telegram auth_date is missing or invalid' };
+    }
+    if (authDate > nowInSeconds + 300) {
+      return { isValid: false, user, authDate, params, error: 'Telegram auth_date is in the future' };
+    }
+
+    // Reject stale Telegram sessions.
+    if (maxAgeSeconds > 0 && (nowInSeconds - authDate > maxAgeSeconds)) {
       return {
         isValid: false,
         user,
@@ -129,10 +139,9 @@ export function validateTelegramInitData(initData, botToken = process.env.TELEGR
  */
 export function telegramAuthMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
-  const initData = req.headers['x-telegram-init-data'] || 
+  const initData = req.headers['x-telegram-init-data'] ||
     (authHeader && authHeader.startsWith('tma ') ? authHeader.slice(4) : null) ||
-    req.body?.initData ||
-    req.query?.initData;
+    (process.env.NODE_ENV === 'production' ? null : (req.body?.initData || req.query?.initData));
 
   if (!initData) {
     return next(new AppError('Unauthorized: Missing Telegram WebApp initData', 401, 'AUTH_INIT_DATA_MISSING'));

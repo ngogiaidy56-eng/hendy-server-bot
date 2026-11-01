@@ -1,16 +1,20 @@
 {
-  "name": "react-example",
+  "name": "hendy-server-bot",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
   "scripts": {
     "dev": "tsx src/server.js",
     "build": "vite build",
+    "build:miniapp": "vite build --config mini-app/vite.config.mjs",
     "start": "node src/server.js",
-    "test": "node --test src/security/cryptoService.test.js src/security/telegramAuth.test.js src/services/userService.test.js src/services/appDataService.test.js src/controllers/botController.test.js src/services/storeService.test.js",
+    "test": "node --test src/security/cryptoService.test.js src/security/telegramAuth.test.js src/security/webhookSecret.test.js src/services/userService.test.js src/services/appDataService.test.js src/controllers/botController.test.js src/services/storeService.test.js",
+    "lint": "node --check src/server.js && node --check src/routes/api.js && node --check src/controllers/botController.js && node --check src/services/telegramStartup.js && node --check src/services/cloudflareDataClient.js && node --check cloudflare/worker.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "clean": "rm -rf dist mini-app/dist"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",
@@ -33,6 +37,7 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "@types/express": "^4.17.21"
+    "@types/express": "^4.17.21",
+    "wrangler": "^4.156.0"
   }
 }

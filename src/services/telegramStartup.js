@@ -1,9 +1,31 @@
 /**
- * Telegram Startup Service
- * Configures Telegram Bot Webhook, Polling, Command menus, and health checks on server startup.
+ * Telegram Bot lifecycle: validate credentials, register commands and configure webhook.
  */
-
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const REQUEST_TIMEOUT_MS = 10000;
+
+async function telegramRequest(token, method, payload) {
+  const response = await fetch(TELEGRAM_API_BASE + '/bot' + token + '/' + method, {
+    method: payload ? 'POST' : 'GET',
+    headers: payload ? { 'content-type': 'application/json' } : undefined,
+    body: payload ? JSON.stringify(payload) : undefined,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) {
+    throw new Error(data.description || ('Telegram ' + method + ' failed (HTTP ' + response.status + ')'));
+  }
+  return data.result;
+}
+
+const COMMANDS = [
+  { command: 'start', description: 'Khởi động Hendy Bot' },
+  { command: 'miniapp', description: 'Mở Hendy Mini App' },
+  { command: 'ask', description: 'Hỏi đáp với Hendy AI' },
+  { command: 'daily', description: 'Điểm danh nhận thưởng' },
+  { command: 'profile', description: 'Xem hồ sơ và số dư' },
+  { command: 'help', description: 'Xem hướng dẫn sử dụng' },
+];
 
 export const telegramStartup = {
   botInfo: null,
@@ -11,123 +33,75 @@ export const telegramStartup = {
   status: 'initializing',
   lastError: null,
 
-  /**
-   * Initializes the Telegram Bot integration
-   * @param {string} [token]
-   * @param {string} [appUrl]
-   */
-  async initialize(token = process.env.TELEGRAM_BOT_TOKEN, appUrl = process.env.APP_URL) {
-    if (!token || token.trim() === '' || token === 'your_telegram_bot_token_here') {
-      this.status = 'simulated_dev_mode';
-      this.botInfo = {
-        id: 123456789,
-        is_bot: true,
-        first_name: 'Hendy Bot (Simulated)',
-        username: 'hendy_tele_bot',
-        can_join_groups: true,
-        can_read_all_group_messages: false,
-        supports_inline_queries: true,
+  async initialize(token = process.env.TELEGRAM_BOT_TOKEN) {
+    this.lastError = null;
+    this.webhookConfigured = false;
+
+    if (!token || !token.trim()) {
+      if (process.env.NODE_ENV === 'production') {
+        this.status = 'configuration_required';
+        this.lastError = 'TELEGRAM_BOT_TOKEN is not configured.';
+        return { success: false, error: this.lastError };
+      }
+      this.status = 'development_without_bot_token';
+      return { success: true, mode: 'development', botInfo: null };
+    }
+
+    const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    if (process.env.NODE_ENV === 'production' &&
+        (!webhookSecret || !/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret))) {
+      this.status = 'configuration_required';
+      this.lastError = 'TELEGRAM_WEBHOOK_SECRET is missing or has an invalid format.';
+      return { success: false, error: this.lastError };
+    }
+
+    const webhookBase = process.env.WEBHOOK_BASE_URL ||
+      process.env.RENDER_EXTERNAL_URL || process.env.APP_URL || '';
+    if (!webhookBase.startsWith('https://')) {
+      this.status = 'configuration_required';
+      this.lastError = 'Set WEBHOOK_BASE_URL to the public HTTPS URL of the Render service.';
+      return { success: false, error: this.lastError };
+    }
+
+    try {
+      this.botInfo = await telegramRequest(token, 'getMe');
+      await telegramRequest(token, 'setMyCommands', { commands: COMMANDS });
+      const webhookUrl = webhookBase.replace(/\/$/, '') + '/api/bot/webhook';
+      const webhookPayload = {
+        url: webhookUrl,
+        allowed_updates: ['message', 'edited_message', 'callback_query'],
+        max_connections: 20,
+        drop_pending_updates: false,
       };
-      console.log('🤖 [Telegram Startup] Running in Simulated Mode (No TELEGRAM_BOT_TOKEN provided). Bot Webhook and Controller are ready for testing.');
-      return { success: true, mode: 'simulated', botInfo: this.botInfo };
-    }
+      if (webhookSecret) webhookPayload.secret_token = webhookSecret;
+      await telegramRequest(token, 'setWebhook', webhookPayload);
 
-    try {
-      // 1. Fetch bot information
-      const getMeRes = await fetch(`${TELEGRAM_API_BASE}/bot${token}/getMe`);
-      const getMeData = await getMeRes.json();
-
-      if (!getMeData.ok) {
-        throw new Error(`Telegram getMe failed: ${getMeData.description || 'Unknown error'}`);
-      }
-
-      this.botInfo = getMeData.result;
-      console.log(`🤖 [Telegram Startup] Authenticated as @${this.botInfo.username} (${this.botInfo.first_name})`);
-
-      // 2. Register Bot Command List in Telegram UI
-      await this.registerCommands(token);
-
-      // 3. Configure Webhook if APP_URL is available
-      if (appUrl && appUrl.startsWith('https://')) {
-        const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/bot/webhook`;
-        await this.setupWebhook(token, webhookUrl);
-      } else {
-        console.log('ℹ️ [Telegram Startup] APP_URL not configured for HTTPS webhook. Use manual webhook setup or simulator.');
-      }
-
+      this.webhookConfigured = true;
       this.status = 'active';
-      return { success: true, mode: 'live', botInfo: this.botInfo };
-    } catch (err) {
+      console.log('[telegram] Authenticated as @' + this.botInfo.username + '; webhook configured.');
+      return { success: true, mode: 'webhook', botInfo: this.botInfo };
+    } catch (error) {
       this.status = 'error';
-      this.lastError = err.message;
-      console.error('❌ [Telegram Startup Error]', err.message);
-      return { success: false, error: err.message };
+      this.lastError = error.message;
+      console.error('[telegram] Initialization failed:', error.message);
+      return { success: false, error: error.message };
     }
   },
 
-  /**
-   * Sets Telegram Bot Command Menu
-   */
-  async registerCommands(token) {
-    const commands = [
-      { command: 'start', description: '🚀 Khởi động Hendy Bot & nhận thưởng' },
-      { command: 'miniapp', description: '🎨 Mở Telegram Mini App Hendy' },
-      { command: 'ask', description: '🧠 Chat thông minh với Gemini 3.8 Flash' },
-      { command: 'daily', description: '🎁 Điểm danh nhận thưởng mỗi ngày' },
-      { command: 'profile', description: '👤 Xem hồ sơ, số dư & năng lượng' },
-      { command: 'help', description: '📖 Hướng dẫn sử dụng & danh sách lệnh' },
-    ];
-
-    try {
-      const res = await fetch(`${TELEGRAM_API_BASE}/bot${token}/setMyCommands`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commands }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        console.log('✅ [Telegram Startup] Bot command list registered successfully.');
-      }
-    } catch (e) {
-      console.warn('⚠️ [Telegram Startup] Could not register bot commands:', e.message);
-    }
+  async getWebhookInfo() {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not configured.');
+    return telegramRequest(token, 'getWebhookInfo');
   },
 
-  /**
-   * Configures Webhook URL with secret token
-   */
-  async setupWebhook(token, webhookUrl) {
-    try {
-      const secretToken = process.env.ENCRYPTION_SECRET?.slice(0, 32) || 'hendy_webhook_secret_2026';
-      const res = await fetch(`${TELEGRAM_API_BASE}/bot${token}/setWebhook`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: webhookUrl,
-          allowed_updates: ['message', 'callback_query', 'inline_query'],
-          secret_token: secretToken,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.ok) {
-        this.webhookConfigured = true;
-        console.log(`🌐 [Telegram Startup] Webhook active at: ${webhookUrl}`);
-      } else {
-        console.warn(`⚠️ [Telegram Startup] setWebhook response:`, data.description);
-      }
-    } catch (e) {
-      console.error('❌ [Telegram Startup] Webhook configuration failed:', e.message);
-    }
-  },
-
-  /**
-   * Returns current status report
-   */
   getStatus() {
     return {
       status: this.status,
-      botInfo: this.botInfo,
+      botInfo: this.botInfo ? {
+        id: this.botInfo.id,
+        username: this.botInfo.username,
+        first_name: this.botInfo.first_name,
+      } : null,
       webhookConfigured: this.webhookConfigured,
       lastError: this.lastError,
       timestamp: new Date().toISOString(),

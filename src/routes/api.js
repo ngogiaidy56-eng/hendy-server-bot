@@ -9,12 +9,47 @@ import { handleWebhook, simulateBotCommand } from '../controllers/botController.
 import { telegramStartup } from '../services/telegramStartup.js';
 import { userService } from '../services/userService.js';
 import { appDataService } from '../services/appDataService.js';
-import { validateTelegramInitData, generateMockInitData } from '../security/telegramAuth.js';
+import { validateTelegramInitData, generateMockInitData, telegramAuthMiddleware } from '../security/telegramAuth.js';
+import { cloudflareDataClient } from '../services/cloudflareDataClient.js';
 import { encrypt, decrypt } from '../security/cryptoService.js';
 import { storeService } from '../services/storeService.js';
 import { AppError } from '../middlewares/errorHandler.js';
 
 const router = Router();
+
+const enforceMiniAppIdentity = (req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') return next();
+  telegramAuthMiddleware(req, res, (error) => {
+    if (error) return next(error);
+    if (String(req.telegramUser?.id) !== String(req.params.id)) {
+      return next(new AppError('Telegram user does not match the requested account.', 403, 'USER_MISMATCH'));
+    }
+    return next();
+  });
+};
+router.use('/user/:id', enforceMiniAppIdentity);
+router.use('/miniapp/tasks/:id', enforceMiniAppIdentity);
+
+router.use('/store', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production' &&
+      !(req.method === 'GET' && req.path.endsWith('/d1/stats'))) {
+    return res.status(503).json({
+      success: false,
+      error: {
+        code: 'STORE_DATA_LAYER_NOT_PRODUCTION_READY',
+        message: 'Legacy storefront routes use in-memory data and are disabled in production. Use the D1-backed bot runtime; migrate store tables before enabling commerce.',
+      },
+    });
+  }
+  return next();
+});
+
+const useCloudflareData = (req, res, next) => {
+  if (process.env.NODE_ENV === 'production' && !cloudflareDataClient.isConfigured()) {
+    return next(new AppError('Cloudflare Data Worker is not configured.', 503, 'DATA_STORE_UNAVAILABLE'));
+  }
+  return next();
+};
 
 // System Health & Bot Status
 router.get('/health', (req, res) => {
@@ -36,12 +71,15 @@ router.get('/bot/status', (req, res) => {
 router.post('/bot/webhook', handleWebhook);
 
 // Dev & UI Bot Simulator
-router.post('/bot/simulate', simulateBotCommand);
+router.post('/bot/simulate', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.sendStatus(404);
+  return simulateBotCommand(req, res, next);
+});
 
 // Telegram WebApp Authentication & InitData verification
-router.post('/auth/validate-init-data', (req, res, next) => {
+router.post('/auth/validate-init-data', async (req, res, next) => {
   try {
-    const { initData } = req.body;
+    const { initData } = req.body || {};
     if (!initData) {
       throw new AppError('Field "initData" is required', 400, 'PARAM_MISSING');
     }
@@ -49,10 +87,16 @@ router.post('/auth/validate-init-data', (req, res, next) => {
     const validation = validateTelegramInitData(initData);
     let userRecord = null;
     if (validation.isValid && validation.user) {
-      userRecord = userService.getOrCreateUser(validation.user);
+      if (cloudflareDataClient.isConfigured()) {
+        userRecord = await cloudflareDataClient.upsertTelegramUser(validation.user);
+      } else if (process.env.NODE_ENV === 'production') {
+        throw new AppError('Cloudflare Data Worker is not configured.', 503, 'DATA_STORE_UNAVAILABLE');
+      } else {
+        userRecord = userService.getOrCreateUser(validation.user);
+      }
     }
 
-    res.json({
+    return res.json({
       success: validation.isValid,
       data: {
         validation,
@@ -60,12 +104,13 @@ router.post('/auth/validate-init-data', (req, res, next) => {
       },
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 
 // Generate mock initData for developer testing
 router.post('/auth/generate-mock-init-data', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.sendStatus(404);
   try {
     const { user, token } = req.body;
     const mockData = generateMockInitData(user, token);
@@ -81,6 +126,14 @@ router.post('/auth/generate-mock-init-data', (req, res, next) => {
 });
 
 // User profile & balance
+router.get('/user/:id', useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const user = await cloudflareDataClient.getUser(req.params.id);
+    return res.json({ success: true, data: user });
+  } catch (error) { return next(error); }
+});
+
 router.get('/user/:id', (req, res, next) => {
   try {
     const { id } = req.params;
@@ -96,6 +149,14 @@ router.get('/user/:id', (req, res, next) => {
 });
 
 // Tap to mine coins
+router.post('/user/:id/tap', useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const result = await cloudflareDataClient.tap(req.params.id, req.body?.taps ?? 1);
+    return res.json({ success: true, data: result });
+  } catch (error) { return next(error); }
+});
+
 router.post('/user/:id/tap', (req, res, next) => {
   try {
     const { id } = req.params;
@@ -108,6 +169,21 @@ router.post('/user/:id/tap', (req, res, next) => {
 });
 
 // Claim daily reward
+router.post('/user/:id/daily', useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const result = await cloudflareDataClient.claimDailyReward(req.params.id);
+    if (!result.claimed) {
+      return res.status(409).json({
+        success: false,
+        error: { code: 'ALREADY_CLAIMED', message: 'Daily reward already claimed today.' },
+        data: result,
+      });
+    }
+    return res.json({ success: true, data: result });
+  } catch (error) { return next(error); }
+});
+
 router.post('/user/:id/daily', (req, res, next) => {
   try {
     const { id } = req.params;
@@ -119,6 +195,14 @@ router.post('/user/:id/daily', (req, res, next) => {
 });
 
 // Mini App tasks
+router.get('/miniapp/tasks/:id', useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const tasks = await cloudflareDataClient.getTasks(req.params.id);
+    return res.json({ success: true, data: tasks });
+  } catch (error) { return next(error); }
+});
+
 router.get('/miniapp/tasks/:id', (req, res, next) => {
   try {
     const { id } = req.params;
@@ -127,6 +211,16 @@ router.get('/miniapp/tasks/:id', (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+router.post('/miniapp/tasks/:id/complete', useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const taskId = req.body?.taskId;
+    if (!taskId) throw new AppError('taskId is required', 400, 'PARAM_MISSING');
+    const result = await cloudflareDataClient.completeTask(req.params.id, taskId);
+    return res.json({ success: true, data: result });
+  } catch (error) { return next(error); }
 });
 
 router.post('/miniapp/tasks/:id/complete', (req, res, next) => {
@@ -145,6 +239,18 @@ router.post('/miniapp/tasks/:id/complete', (req, res, next) => {
 
 // Mini App Leaderboard
 router.get('/miniapp/leaderboard', (req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') return next();
+  return telegramAuthMiddleware(req, res, next);
+}, useCloudflareData, async (req, res, next) => {
+  if (!cloudflareDataClient.isConfigured()) return next('route');
+  try {
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+    const leaderboard = await cloudflareDataClient.getLeaderboard(limit);
+    return res.json({ success: true, data: leaderboard });
+  } catch (error) { return next(error); }
+});
+
+router.get('/miniapp/leaderboard', (req, res, next) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 10;
     const leaderboard = appDataService.getLeaderboard(limit);
@@ -155,13 +261,17 @@ router.get('/miniapp/leaderboard', (req, res, next) => {
 });
 
 // Gemini AI Chat endpoint
-router.post('/gemini/chat', async (req, res, next) => {
+router.post('/gemini/chat', (req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') return next();
+  return telegramAuthMiddleware(req, res, next);
+}, async (req, res, next) => {
   try {
     const { prompt, user } = req.body;
     if (!prompt) {
       throw new AppError('prompt is required', 400, 'PARAM_MISSING');
     }
-    const reply = await appDataService.generateHendyAiResponse(prompt, user);
+    const verifiedUser = req.telegramUser || user;
+    const reply = await appDataService.generateHendyAiResponse(prompt, verifiedUser);
     res.json({
       success: true,
       data: {
@@ -176,6 +286,7 @@ router.post('/gemini/chat', async (req, res, next) => {
 
 // Security demo endpoint (AES-256-GCM)
 router.post('/security/encrypt', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.sendStatus(404);
   try {
     const { text, secret } = req.body;
     if (!text) {
@@ -189,6 +300,7 @@ router.post('/security/encrypt', (req, res, next) => {
 });
 
 router.post('/security/decrypt', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.sendStatus(404);
   try {
     const { payload, secret } = req.body;
     if (!payload) {
@@ -402,6 +514,7 @@ Task:
 
 // 6. Cloudflare R2 Packaging & D1 Schema stats
 router.post('/store/r2/package', (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') return res.status(501).json({ success: false, error: { code: 'R2_UPLOAD_REQUIRES_BINARY_PIPELINE', message: 'Use the authenticated Cloudflare Worker R2 upload endpoint.' } });
   try {
     const { fileName, sizeBytes } = req.body;
     const pkg = storeService.uploadPackageToR2(fileName || 'hendy-app-bundle.zip', 'application/zip', sizeBytes);
@@ -409,6 +522,19 @@ router.post('/store/r2/package', (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+router.get('/store/d1/stats', async (req, res, next) => {
+  if (cloudflareDataClient.isConfigured()) {
+    try {
+      const data = await cloudflareDataClient.getStorageStats();
+      return res.json({ success: true, data });
+    } catch (error) { return next(error); }
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Cloudflare Data Worker is not configured.', 503, 'DATA_STORE_UNAVAILABLE'));
+  }
+  return next('route');
 });
 
 router.get('/store/d1/stats', (req, res, next) => {
